@@ -1,0 +1,34 @@
+name: Weekly AFL results predictor
+run-name: Run ML pipeline for current gameweek
+
+on:
+  schedule:
+    - cron: '0 11 * * 2'
+  workflow_dispatch: # Enable manual trigger
+    inputs:
+      round:
+        description: 'AFL Round number as defined in the Squiggle API (0-25)'
+        default: '0'
+
+jobs:
+  predict:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run ML Pipeline
+        run: uv run python src.ml.predict.py --year 2026 --round 1
+
+      

@@ -11,8 +11,8 @@
 import pandas as pd
 import numpy as np
 
-from logger import logger
-from config import ROLLING_WINDOW
+from utils.logger import logger
+from utils.config import ROLLING_WINDOW
 
 
 # ── Step 1: Aggregate player stats to team level per game ─────────────────────
@@ -89,7 +89,10 @@ def _rolling_team_features(games_df: pd.DataFrame, window: int) -> pd.DataFrame:
     IMPORTANT: We shift by 1 so we never include the current game's result.
     This prevents data leakage.
     """
-    df = games_df.sort_values(["year", "date"]).copy()
+    df = games_df.copy()
+    df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=True)
+    df["is_predict"] = df["gameid"].astype(str).str.startswith("PREDICT_")
+    df = df.sort_values(["year", "date", "is_predict"]).reset_index(drop=True)
 
     # We'll compute rolling stats from both perspectives
     records = []
@@ -152,7 +155,10 @@ def _head_to_head_features(games_df: pd.DataFrame) -> pd.DataFrame:
     For each game, compute the home team's historical win rate against the away team.
     Again, only uses games BEFORE the current one.
     """
-    df = games_df.sort_values(["year", "date"]).copy()
+    df = games_df.copy()
+    df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=True)
+    df["is_predict"] = df["gameid"].astype(str).str.startswith("PREDICT_")
+    df = df.sort_values(["year", "date", "is_predict"]).reset_index(drop=True)
 
     h2h = {}  # key: (home_team, away_team) → list of home wins
     records = []
@@ -275,9 +281,15 @@ def _home_ground_advantage(games_df: pd.DataFrame) -> pd.DataFrame:
 def _streak_and_rest_features(games_df: pd.DataFrame) -> pd.DataFrame:
     """
     Compute win/loss streak and days rest for each team going into each game.
+    Days rest is capped at 21 to avoid season-start outliers skewing predictions.
     """
-    df = games_df.sort_values("date").copy()
-    df["date_dt"] = pd.to_datetime(df["date"], format="mixed", dayfirst=True)
+    MAX_DAYS_REST = 14
+
+    df = games_df.copy()
+    df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=True)
+    df["is_predict"] = df["gameid"].astype(str).str.startswith("PREDICT_")
+    df = df.sort_values(["year", "date", "is_predict"]).reset_index(drop=True)
+    df["date_dt"] = df["date"]
 
     team_history = {}  # team -> list of (date, win)
     records = []
@@ -301,21 +313,31 @@ def _streak_and_rest_features(games_df: pd.DataFrame) -> pd.DataFrame:
             return streak if last_result == 1 else -streak
 
         def get_days_rest(team):
-            """Days since last game."""
+            """Days since last game, capped at MAX_DAYS_REST."""
             history = team_history.get(team, [])
             if not history:
                 return np.nan
             last_date = history[-1][0]
-            return (game_date - last_date).days
+            days = (game_date - last_date).days
+            return min(days, MAX_DAYS_REST)
+
+        home_rest = get_days_rest(home)
+        away_rest = get_days_rest(away)
+        home_streak = get_streak(home)
+        away_streak = get_streak(away)
+
+        rest_diff = (home_rest - away_rest) if (
+            not np.isnan(home_rest) and not np.isnan(away_rest)
+        ) else np.nan
 
         records.append({
             "gameid": row["gameid"],
-            "home_streak": get_streak(home),
-            "away_streak": get_streak(away),
-            "streak_diff": get_streak(home) - get_streak(away),
-            "home_days_rest": get_days_rest(home),
-            "away_days_rest": get_days_rest(away),
-            "rest_diff": (get_days_rest(home) or 0) - (get_days_rest(away) or 0),
+            "home_streak": home_streak,
+            "away_streak": away_streak,
+            "streak_diff": home_streak - away_streak,
+            "home_days_rest": home_rest,
+            "away_days_rest": away_rest,
+            "rest_diff": rest_diff,
         })
 
         # Update after extracting (no leakage)
@@ -332,7 +354,10 @@ def _ladder_position_features(games_df: pd.DataFrame) -> pd.DataFrame:
     Compute each team's current ladder position at the time of each game.
     Only uses results from the current season up to (but not including) the current game.
     """
-    df = games_df.sort_values(["year", "date"]).copy()
+    df = games_df.copy()
+    df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=True)
+    df["is_predict"] = df["gameid"].astype(str).str.startswith("PREDICT_")
+    df = df.sort_values(["year", "date", "is_predict"]).reset_index(drop=True)
 
     records = []
 
@@ -476,7 +501,9 @@ def _interstate_travel_features(games_df: pd.DataFrame) -> pd.DataFrame:
 # ── Elo features ───────────────────────────────────────────────────────────
 
 def _elo_features(games_df: pd.DataFrame, k: int = 32, carry_over: float = 0.75) -> pd.DataFrame:
-    df = games_df.sort_values(["year", "date"]).copy()
+    df = games_df.copy()
+    df["date"] = pd.to_datetime(df["date"], format="mixed", dayfirst=True)
+    df = df.sort_values(["year", "date"]).reset_index(drop=True)
 
     elo_ratings = {team: 1500 for team in set(df["hometeam"].dropna()).union(set(df["awayteam"].dropna()))}
     current_year = None
@@ -509,6 +536,7 @@ def _elo_features(games_df: pd.DataFrame, k: int = 32, carry_over: float = 0.75)
 
         # Only update ratings for real games (not placeholder upcoming games)
         is_real_game = not str(row["gameid"]).startswith("PREDICT_")
+
         if is_real_game:
             actual_home = 1 if row["hometeamscore"] > row["awayteamscore"] else 0
             change = k * (actual_home - expected_home)
@@ -576,6 +604,12 @@ def build_features(games_df: pd.DataFrame, stats_df: pd.DataFrame) -> pd.DataFra
     for df_part in [rolling, h2h, rolling_stats, venue, hga, streak_and_rest, ladder_pos, ist, elo]:
         feature_df = feature_df.merge(df_part, on="gameid", how="left")
 
+    # Differential features — replace noisy individual home/away values with clean differentials
+    feature_df["rolling_margin_diff"]        = feature_df["home_rolling_margin"]        - feature_df["away_rolling_margin"]
+    feature_df["rolling_score_for_diff"]     = feature_df["home_rolling_score_for"]     - feature_df["away_rolling_score_for"]
+    feature_df["rolling_score_against_diff"] = feature_df["home_rolling_score_against"] - feature_df["away_rolling_score_against"]
+    feature_df["rolling_win_rate_diff"]      = feature_df["home_rolling_win_rate"]      - feature_df["away_rolling_win_rate"]
+    
     # Drop rows where rolling features are all NaN (first few games of a team's history)
     before = len(feature_df)
     feature_df = feature_df.dropna(subset=["home_rolling_win_rate", "away_rolling_win_rate"])

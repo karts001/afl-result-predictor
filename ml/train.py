@@ -8,7 +8,6 @@ Run this with:
 """
 
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold, cross_val_score
@@ -19,28 +18,14 @@ from sklearn.metrics import (
 from sklearn.impute import SimpleImputer
 import joblib
 
-from config import TEST_SIZE, RECENCY_WEIGHTING, XGBOOST_PARAMS, MODEL_PATH, FEATURES_PATH, MIN_YEAR
-from data_loader import load_all
+from utils.config import KEEP_FEATURES, NON_FEATURE_COLS, TEST_SIZE, RECENCY_WEIGHTING, XGBOOST_PARAMS, MODEL_PATH, FEATURES_PATH, MIN_YEAR
+from services.data_loader import load_all
 from feature_engineering import build_features
-from logger import logger
+from utils.logger import logger
 
 
 # ── Columns that are NOT features ─────────────────────────────────────────────
-NON_FEATURE_COLS = ["gameid", "year", "date", "round", "hometeam", "awayteam", "home_win", "venue"]
-KEEP_FEATURES = [
-    "home_rolling_win_rate", "away_rolling_win_rate",
-    "home_rolling_score_for", "away_rolling_score_for",
-    "home_rolling_score_against", "away_rolling_score_against",
-    "home_rolling_margin", "away_rolling_margin",
-    "h2h_home_win_rate", "h2h_total_games",
-    "home_venue_win_rate", "away_venue_win_rate",
-    "home_streak", "away_streak", "streak_diff",
-    "home_days_rest", "away_days_rest", "rest_diff",
-    "venue_encoded",
-    "home_ladder_position", "away_ladder_position", "ladder_position_diff",
-    "away_interstate", "home_interstate",
-    "home_elo", "away_elo", "elo_diff", "elo_home_win_prob",
-]
+
 
 def prepare_data(feature_df: pd.DataFrame):
     """
@@ -152,10 +137,12 @@ def evaluate_model(model, X_train, X_test, y_train, y_test, feature_cols):
     return test_acc, auc
 
 
-def save_artifacts(model, imputer, feature_cols):
+def save_artifacts(model, imputer, feature_cols, X_train):
     """Save model and feature list so we can load them for predictions later."""
     model.save_model(MODEL_PATH)
     joblib.dump(imputer, "imputer.pkl")
+    X_train.to_csv("x_train.csv", index=False)
+
     with open(FEATURES_PATH, "w") as f:
         f.write("\n".join(feature_cols))
     logger.info(f"\n Saved model → {MODEL_PATH}")
@@ -180,7 +167,7 @@ def main():
     evaluate_model(model, X_train, X_test, y_train, y_test, feature_cols)
 
     # 6. Save
-    save_artifacts(model, imputer, feature_cols)
+    save_artifacts(model, imputer, feature_cols, X_train)
 
     logger.info("\n Pipeline complete! Run predict.py to forecast upcoming games.")
 

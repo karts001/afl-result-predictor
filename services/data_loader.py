@@ -9,7 +9,7 @@ import pandas as pd
 from dotenv import load_dotenv
 import sqlalchemy
 
-from logger import logger
+from utils.logger import logger
 
 load_dotenv()
 
